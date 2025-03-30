@@ -132,8 +132,8 @@ const ContactPage = () => {
               <div className="info-item">
                 <i className="fas fa-envelope"></i>
                 <div>
-                  <h3>Email</h3>
-                  <p>info@uboost.es</p>
+                  <h3>Contacto</h3>
+                  <p>Usa el formulario para contactarnos</p>
                 </div>
               </div>
               

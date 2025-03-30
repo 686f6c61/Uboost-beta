@@ -7,7 +7,8 @@ const {
   pauseUser, 
   deleteUser,
   getUsersStats,
-  getActivityLogs
+  getActivityLogs,
+  recalculateStats
 } = require('../controllers/admin');
 const { protect, authorize } = require('../middleware/auth');
 
@@ -28,6 +29,7 @@ router.put('/users/:id/delete', deleteUser);
 
 // Estadísticas de uso
 router.get('/stats/usage', getUsersStats);
+router.post('/stats/recalculate', recalculateStats);
 
 // Logs de actividad de usuarios
 router.get('/activity-logs', getActivityLogs);

@@ -433,10 +433,18 @@ const QueryHistoryPage = () => {
                 <Typography variant="subtitle1" gutterBottom>
                   Respuesta:
                 </Typography>
-                <Paper variant="outlined" sx={{ p: 2, backgroundColor: 'action.hover' }}>
-                  <Typography variant="body2" style={{ whiteSpace: 'pre-wrap' }}>
-                    {selectedQuery.response || 'N/A'}
-                  </Typography>
+                <Paper variant="outlined" sx={{ p: 2, backgroundColor: 'action.hover', maxHeight: '400px', overflow: 'auto' }}>
+                  {typeof selectedQuery.response === 'object' ? (
+                    // Si la respuesta es un objeto (como podría ser con resúmenes estructurados)
+                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
+                      {JSON.stringify(selectedQuery.response, null, 2)}
+                    </pre>
+                  ) : (
+                    // Si la respuesta es una cadena de texto normal
+                    <Typography variant="body2" style={{ whiteSpace: 'pre-wrap' }}>
+                      {selectedQuery.response || 'N/A'}
+                    </Typography>
+                  )}
                 </Paper>
               </Box>
               

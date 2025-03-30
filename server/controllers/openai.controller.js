@@ -4,6 +4,7 @@ const fs = require('fs-extra');
 const { extractPdfText, chunkText } = require('../utils/pdf.utils');
 const { getSummaryPrompt, getFileSpecificPrompt, getReviewArticleSectionPrompt } = require('../utils/prompts');
 const { updateTokenUsage } = require('../utils/tokenTracking');
+const QueryLog = require('../models/queryLog');
 
 const UPLOADS_DIR = path.join(__dirname, '../uploads');
 
@@ -11,6 +12,32 @@ const UPLOADS_DIR = path.join(__dirname, '../uploads');
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+/**
+ * Función para registrar cada consulta en la base de datos
+ * Registra información sobre la consulta, tokens utilizados y costos
+ */
+async function logQuery(userId, query, response, model, tokens, type = 'simple_query', documentId = null, metadata = {}) {
+  try {
+    const queryLog = new QueryLog({
+      user: userId,
+      query: query,
+      response: response,
+      model: model,
+      tokens: tokens,
+      type: type,
+      documentId: documentId,
+      metadata: metadata,
+      timestamp: new Date()
+    });
+    
+    await queryLog.save();
+    console.log(`Consulta registrada para el usuario ${userId} con ${tokens.total} tokens`);
+  } catch (err) {
+    console.error('Error al registrar la consulta:', err);
+    // No lanzamos el error para no interrumpir el flujo principal
+  }
+}
 
 /**
  * Generate a specific section of a review article based on multiple PDF summaries
@@ -49,6 +76,22 @@ exports.generateReviewArticleSection = async (req, res) => {
     const promptTokens = response.usage.prompt_tokens;
     const completionTokens = response.usage.completion_tokens;
     const totalTokens = response.usage.total_tokens;
+    
+    // Registrar la consulta en la base de datos
+    await logQuery(
+      req.user.id,
+      customPrompt,
+      generatedContent,
+      model,
+      {
+        input: promptTokens,
+        output: completionTokens,
+        total: totalTokens
+      },
+      'article_review',
+      null,
+      { section }
+    );
     
     // Estructura de uso de tokens para la respuesta y para registrar
     const tokenUsage = {
@@ -164,6 +207,27 @@ exports.processQuery = async (req, res) => {
       temperature: 0.7,
       max_tokens: 1000,
     });
+    
+    // Calcular uso de tokens
+    const promptTokens = completion.usage.prompt_tokens;
+    const completionTokens = completion.usage.completion_tokens;
+    const totalTokens = completion.usage.total_tokens;
+    
+    // Registrar la consulta en la base de datos
+    await logQuery(
+      req.user.id,
+      query,
+      completion.choices[0].message.content,
+      "gpt-4o-mini",
+      {
+        input: promptTokens,
+        output: completionTokens,
+        total: totalTokens
+      },
+      'simple_query',
+      fileIds && fileIds.length > 0 ? fileIds[0] : null,
+      { fileCount: pdfFiles.length }
+    );
 
     res.status(200).json({
       success: true,

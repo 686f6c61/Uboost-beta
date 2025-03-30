@@ -4,6 +4,7 @@ const fs = require('fs-extra');
 const { extractPdfText, chunkText } = require('../utils/pdf.utils');
 const { getSummaryPrompt, getFileSpecificPrompt, getReviewArticleSectionPrompt } = require('../utils/prompts');
 const { updateTokenUsage } = require('../utils/tokenTracking');
+const QueryLog = require('../models/queryLog');
 
 const UPLOADS_DIR = path.join(__dirname, '../uploads');
 
@@ -11,6 +12,32 @@ const UPLOADS_DIR = path.join(__dirname, '../uploads');
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY, // Esta clave debe estar en el archivo .env
 });
+
+/**
+ * Función para registrar cada consulta en la base de datos
+ * Registra información sobre la consulta, tokens utilizados y costos
+ */
+async function logQuery(userId, query, response, model, tokens, type = 'simple_query', documentId = null, metadata = {}) {
+  try {
+    const queryLog = new QueryLog({
+      user: userId,
+      query: query,
+      response: response,
+      model: model,
+      tokens: tokens,
+      type: type,
+      documentId: documentId,
+      metadata: metadata,
+      timestamp: new Date()
+    });
+    
+    await queryLog.save();
+    console.log(`Consulta registrada para el usuario ${userId} con ${tokens.total} tokens (Anthropic)`);
+  } catch (err) {
+    console.error('Error al registrar la consulta:', err);
+    // No lanzamos el error para no interrumpir el flujo principal
+  }
+}
 
 /**
  * Generate a structured summary of PDF documents using Claude
@@ -62,6 +89,22 @@ exports.generateReviewArticleSection = async (req, res) => {
       // No estamos procesando PDFs directamente en esta función, así que ponemos 0
       // Añadir el modelo como parámetro para permitir el seguimiento por modelo
       await updateTokenUsage(req.user.id, tokenUsage, 0, model);
+      
+      // Registrar la consulta completa en QueryLog
+      await logQuery(
+        req.user.id,
+        customPrompt,
+        generatedContent,
+        model,
+        {
+          input: promptTokens,
+          output: completionTokens,
+          total: totalTokens
+        },
+        'article_review',
+        null,
+        { section }
+      );
     }
 
     return res.json({
@@ -228,6 +271,22 @@ exports.generateSummary = async (req, res) => {
     if (req.user && req.user.id) {
       // Registrar el modelo correctamente
       await updateTokenUsage(req.user.id, tokenUsage, pdfFiles.length, modelParams.model);
+      
+      // Registrar la consulta completa en QueryLog
+      await logQuery(
+        req.user.id,
+        userMessage,
+        response.content[0].text,
+        modelParams.model,
+        {
+          input: tokenUsage.promptTokens,
+          output: tokenUsage.completionTokens,
+          total: tokenUsage.totalTokens
+        },
+        'structured_summary',
+        fileIds && fileIds.length > 0 ? fileIds[0] : null,
+        { fileCount: pdfFiles.length, requestParams: modelParams }
+      );
     }
 
     res.status(200).json({

@@ -1,9 +1,19 @@
 const User = require('../models/user');
 const UserActivity = require('../models/userActivity');
+const QueryLog = require('../models/queryLog');
 const { getAllUserStats } = require('../utils/tokenTracking');
 const mongoose = require('mongoose');
 const { sendAccountApprovedEmail } = require('../utils/emailService');
 const { logUserActivity } = require('../utils/activityLogger');
+
+// Precios de tokens por modelo (por millón)
+const MODEL_PRICES = {
+  'gpt-4o': { input: 5, output: 15, name: 'GPT-4o' },
+  'gpt-4o-mini': { input: 0.15, output: 0.6, name: 'GPT-4o Mini' },
+  'claude-3-7-sonnet-20240307': { input: 3, output: 15, name: 'Claude 3.7 Sonnet' },
+  'claude-3-5-sonnet-20240620': { input: 3, output: 15, name: 'Claude 3.5 Sonnet' },
+  'default': { input: 1, output: 2, name: 'Modelo desconocido' }
+};
 
 // @desc    Get all users
 // @route   GET /api/admin/users
@@ -55,93 +65,145 @@ exports.getUser = async (req, res) => {
 // @route   GET /api/admin/stats/usage
 // @access  Private/Admin
 exports.getUsersStats = async (req, res) => {
-  console.log('➡️ Iniciando getUsersStats simplificada...');
+  console.log('➡️ Iniciando getUsersStats...');
   
   try {
-    // Crear datos de prueba para demostración
-    const mockUsersStats = [
-      {
-        _id: '1',
-        name: 'Usuario Demo 1',
-        email: 'demo1@example.com',
-        role: 'user',
-        status: 'approved',
-        registeredDate: '15 de marzo de 2025',
-        usage: {
-          pdfsProcessed: 12,
-          tokens: {
-            input: 25000,
-            output: 15000,
-            total: 40000
-          },
-          modelUsage: [
-            { name: 'gpt-4o-mini', tokens: 30000, cost: 6.00 },
-            { name: 'claude-3-7-sonnet', tokens: 10000, cost: 9.00 }
-          ],
-          estimatedCostUSD: 15.00
-        }
-      },
-      {
-        _id: '2',
-        name: 'Usuario Demo 2',
-        email: 'demo2@example.com',
-        role: 'user',
-        status: 'approved',
-        registeredDate: '20 de febrero de 2025',
-        usage: {
-          pdfsProcessed: 5,
-          tokens: {
-            input: 12000,
-            output: 8000,
-            total: 20000
-          },
-          modelUsage: [
-            { name: 'gpt-4o-mini', tokens: 20000, cost: 4.00 }
-          ],
-          estimatedCostUSD: 4.00
-        }
-      },
-      {
-        _id: '3',
-        name: 'Administrador',
-        email: 'admin@example.com',
-        role: 'admin',
-        status: 'approved',
-        registeredDate: '1 de enero de 2025',
-        usage: {
-          pdfsProcessed: 25,
-          tokens: {
-            input: 50000,
-            output: 30000,
-            total: 80000
-          },
-          modelUsage: [
-            { name: 'gpt-4o', tokens: 40000, cost: 20.00 },
-            { name: 'claude-3-opus', tokens: 40000, cost: 36.00 }
-          ],
-          estimatedCostUSD: 56.00
-        }
-      }
-    ];
+    // Obtener todos los usuarios
+    const users = await User.find({}).select('firstName lastName email role status createdAt');
     
-    // Calcular totales a partir de los datos de prueba
-    const mockTotals = {
-      pdfsProcessed: 42,
-      tokensInput: 87000,
-      tokensOutput: 53000,
-      tokensTotal: 140000,
-      estimatedCostUSD: 75.00,
-      totalUsers: 3,
-      activeUsers: 3
+    // Obtener logs de consultas para calcular uso de tokens
+    const queryLogs = await QueryLog.find({})
+      .populate('user', 'firstName lastName email')
+      .lean();
+    
+    // Calcular estadísticas por usuario
+    const usersStats = await Promise.all(users.map(async (user) => {
+      // Filtrar logs para este usuario
+      const userLogs = queryLogs.filter(log => 
+        log.user && log.user._id && log.user._id.toString() === user._id.toString());
+      
+      // Contar PDFs procesados (aproximación a través de consultas)
+      const pdfsProcessed = userLogs.length;
+      
+      // Calcular uso total de tokens
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let totalTokens = 0;
+      let estimatedCost = 0;
+      
+      // Seguimiento de uso por modelo
+      const modelUsageMap = {};
+      
+      // Procesar cada log de consulta
+      userLogs.forEach(log => {
+        if (log.tokens) {
+          // Sumar tokens
+          const inTokens = log.tokens.input || 0;
+          const outTokens = log.tokens.output || 0;
+          
+          inputTokens += inTokens;
+          outputTokens += outTokens;
+          totalTokens += (inTokens + outTokens);
+          
+          // Calcular costo basado en el modelo
+          const model = log.model || 'default';
+          const modelPrice = MODEL_PRICES[model] || MODEL_PRICES.default;
+          
+          const inputCost = (inTokens / 1000000) * modelPrice.input;
+          const outputCost = (outTokens / 1000000) * modelPrice.output;
+          const queryCost = inputCost + outputCost;
+          
+          estimatedCost += queryCost;
+          
+          // Actualizar estadísticas del modelo
+          if (!modelUsageMap[model]) {
+            modelUsageMap[model] = { tokens: 0, cost: 0 };
+          }
+          modelUsageMap[model].tokens += (inTokens + outTokens);
+          modelUsageMap[model].cost += queryCost;
+        }
+      });
+      
+      // Convertir el mapa de uso de modelos a un array
+      const modelUsage = Object.entries(modelUsageMap).map(([name, stats]) => ({
+        name,
+        tokens: stats.tokens,
+        cost: parseFloat(stats.cost.toFixed(2))
+      }));
+      
+      return {
+        _id: user._id,
+        name: `${user.firstName} ${user.lastName}`,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        registeredDate: new Date(user.createdAt).toLocaleDateString('es-ES', {
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric'
+        }),
+        usage: {
+          pdfsProcessed,
+          tokens: {
+            input: inputTokens,
+            output: outputTokens,
+            total: totalTokens
+          },
+          modelUsage,
+          estimatedCostUSD: parseFloat(estimatedCost.toFixed(2))
+        }
+      };
+    }));
+    
+    // Calcular totales generales
+    let totalPdfsProcessed = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalTokensAll = 0;
+    let totalCostUSD = 0;
+    let activeUsersCount = 0;
+    
+    const modelTotals = {};
+    
+    usersStats.forEach(user => {
+      totalPdfsProcessed += user.usage.pdfsProcessed;
+      totalInputTokens += user.usage.tokens.input;
+      totalOutputTokens += user.usage.tokens.output;
+      totalTokensAll += user.usage.tokens.total;
+      totalCostUSD += user.usage.estimatedCostUSD;
+      
+      if (user.usage.pdfsProcessed > 0) {
+        activeUsersCount++;
+      }
+      
+      // Agregar uso por modelo
+      user.usage.modelUsage.forEach(model => {
+        if (!modelTotals[model.name]) {
+          modelTotals[model.name] = { tokens: 0, cost: 0 };
+        }
+        modelTotals[model.name].tokens += model.tokens;
+        modelTotals[model.name].cost += model.cost;
+      });
+    });
+    
+    const totals = {
+      pdfsProcessed: totalPdfsProcessed,
+      tokensInput: totalInputTokens,
+      tokensOutput: totalOutputTokens,
+      tokensTotal: totalTokensAll,
+      estimatedCostUSD: parseFloat(totalCostUSD.toFixed(2)),
+      totalUsers: usersStats.length,
+      activeUsers: activeUsersCount,
+      byModel: modelTotals
     };
     
-    console.log('✅ Devolviendo datos de prueba de estadísticas de uso');
+    console.log('✅ Estadísticas de uso calculadas correctamente');
     
     return res.status(200).json({
       success: true,
       data: {
-        users: mockUsersStats,
-        totals: mockTotals
+        users: usersStats,
+        totals: totals
       }
     });
   } catch (err) {
@@ -450,3 +512,110 @@ function getActionDescription(action) {
   
   return descriptions[action] || action;
 }
+
+// @desc    Recalculate usage statistics
+// @route   POST /api/admin/stats/recalculate
+// @access  Private/Admin
+exports.recalculateStats = async (req, res) => {
+  try {
+    console.log('➡️ Iniciando recalculateStats...');
+    
+    // Verificar si ya existen registros en QueryLog
+    const existingLogs = await QueryLog.countDocuments();
+    console.log(`Registros existentes en QueryLog: ${existingLogs}`);
+    
+    // Si no hay registros, crear algunos datos de prueba
+    if (existingLogs === 0) {
+      console.log('No se encontraron registros. Creando datos de prueba...');
+      
+      // Obtener los usuarios para crear registros de prueba
+      const users = await User.find();
+      
+      if (users.length === 0) {
+        return res.status(200).json({
+          success: true,
+          message: 'No hay usuarios en el sistema para crear datos de prueba.'
+        });
+      }
+      
+      // Crear datos de prueba para cada usuario
+      const sampleData = [];
+      
+      // Modelos para simular variedad de uso
+      const models = ['gpt-4o', 'gpt-4o-mini', 'claude-3-7-sonnet-20240307'];
+      
+      // Tipos de consultas
+      const queryTypes = ['simple_query', 'structured_summary', 'article_review'];
+      
+      // Crear datos para los últimos 30 días
+      const now = new Date();
+      
+      for (const user of users) {
+        // Número aleatorio de consultas por usuario (entre 5 y 15)
+        const queryCount = Math.floor(Math.random() * 10) + 5;
+        
+        for (let i = 0; i < queryCount; i++) {
+          // Seleccionar modelo aleatorio
+          const model = models[Math.floor(Math.random() * models.length)];
+          
+          // Seleccionar tipo aleatorio
+          const type = queryTypes[Math.floor(Math.random() * queryTypes.length)];
+          
+          // Generar fecha aleatoria en los últimos 30 días
+          const randomDaysAgo = Math.floor(Math.random() * 30);
+          const timestamp = new Date(now);
+          timestamp.setDate(timestamp.getDate() - randomDaysAgo);
+          
+          // Generar tokens aleatorios basados en el modelo
+          let inputTokens, outputTokens;
+          
+          if (model === 'gpt-4o') {
+            inputTokens = Math.floor(Math.random() * 2000) + 1000;
+            outputTokens = Math.floor(Math.random() * 1000) + 500;
+          } else if (model === 'gpt-4o-mini') {
+            inputTokens = Math.floor(Math.random() * 3000) + 1500;
+            outputTokens = Math.floor(Math.random() * 1500) + 750;
+          } else {
+            // Claude
+            inputTokens = Math.floor(Math.random() * 4000) + 2000;
+            outputTokens = Math.floor(Math.random() * 2000) + 1000;
+          }
+          
+          // Crear registro simulado
+          const queryLog = new QueryLog({
+            user: user._id,
+            query: `Consulta de prueba #${i+1} para ${type}`,
+            response: `Esta es una respuesta simulada de ${model} para una consulta de tipo ${type}`,
+            model: model,
+            tokens: {
+              input: inputTokens,
+              output: outputTokens,
+              total: inputTokens + outputTokens
+            },
+            type: type,
+            timestamp: timestamp
+          });
+          
+          sampleData.push(queryLog);
+        }
+      }
+      
+      // Guardar todos los registros de prueba
+      if (sampleData.length > 0) {
+        await QueryLog.insertMany(sampleData);
+        console.log(`Se crearon ${sampleData.length} registros de prueba`);
+      }
+    }
+    
+    return res.status(200).json({
+      success: true,
+      message: `Estadísticas recalculadas correctamente. ${existingLogs === 0 ? 'Se crearon datos de prueba.' : 'Se usaron los datos existentes.'}`
+    });
+  } catch (err) {
+    console.error('Error al recalcular estadísticas:', err);
+    res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};

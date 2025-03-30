@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import SimpleCaptcha from '../Auth/SimpleCaptcha';
+import TermsDialog from './TermsDialog';
+import PrivacyDialog from './PrivacyDialog';
 
 // Lista de países para autocompletado
 const countries = [
@@ -31,13 +33,18 @@ const countries = [
  * Componente de formulario para solicitar Early Access
  */
 const EarlyAccessForm = () => {
+  // Estado para controlar la apertura de los diálogos
+  const [termsDialogOpen, setTermsDialogOpen] = useState(false);
+  const [privacyDialogOpen, setPrivacyDialogOpen] = useState(false);
+  
   // Estado del formulario
   const [formData, setFormData] = useState({
     name: '',
     university: '',
     country: '',
     email: '',
-    purpose: ''
+    purpose: '',
+    acceptTerms: false // Nuevo campo para aceptación de términos y RGPD
   });
   
   // Estados para control del formulario
@@ -52,7 +59,10 @@ const EarlyAccessForm = () => {
   
   // Verificar si el usuario ha comenzado a escribir en el formulario
   useEffect(() => {
-    const hasStartedFilling = Object.values(formData).some(value => value.trim() !== '');
+    const hasStartedFilling = Object.values(formData).some(value => 
+      // Solo aplicar trim() a valores de tipo string
+      typeof value === 'string' && value.trim() !== ''
+    );
     if (hasStartedFilling && !showCaptcha) {
       setShowCaptcha(true);
     }
@@ -60,10 +70,10 @@ const EarlyAccessForm = () => {
 
   // Manejar cambios en los campos del formulario
   const handleChange = (e) => {
-    const { id, value } = e.target;
+    const { id, value, type, checked } = e.target;
     setFormData({
       ...formData,
-      [id.replace('ea-', '')]: value
+      [id.replace('ea-', '')]: type === 'checkbox' ? checked : value
     });
   };
 
@@ -73,6 +83,9 @@ const EarlyAccessForm = () => {
       return false;
     }
     if (!captchaValid) {
+      return false;
+    }
+    if (!formData.acceptTerms) {
       return false;
     }
     return true;
@@ -115,7 +128,8 @@ const EarlyAccessForm = () => {
           university: '',
           country: '',
           email: '',
-          purpose: ''
+          purpose: '',
+          acceptTerms: false
         });
       } else {
         setFormStatus({
@@ -167,7 +181,12 @@ const EarlyAccessForm = () => {
   }
 
   return (
-    <form id="early-access-form" onSubmit={handleSubmit}>
+    <>
+      {/* Diálogos de Términos y Privacidad */}
+      <TermsDialog open={termsDialogOpen} onClose={() => setTermsDialogOpen(false)} />
+      <PrivacyDialog open={privacyDialogOpen} onClose={() => setPrivacyDialogOpen(false)} />
+      
+      <form id="early-access-form" onSubmit={handleSubmit}>
       <div className="form-group">
         <label htmlFor="ea-name">Nombre completo</label>
         <div className="input-icon-wrapper">
@@ -254,6 +273,22 @@ const EarlyAccessForm = () => {
         </div>
       )}
       
+      {/* Checkbox de aceptación de términos y RGPD */}
+      <div className="form-group terms-checkbox">
+        <div className="checkbox-wrapper">
+          <input
+            type="checkbox"
+            id="ea-acceptTerms"
+            checked={formData.acceptTerms}
+            onChange={handleChange}
+            required
+          />
+          <label htmlFor="ea-acceptTerms" className="checkbox-label">
+            Acepto la <a href="#" onClick={(e) => {e.preventDefault(); setPrivacyDialogOpen(true);}}>Política de Privacidad</a> y los <a href="#" onClick={(e) => {e.preventDefault(); setTermsDialogOpen(true);}}>Términos y Condiciones</a> de UBoost, y doy mi consentimiento para el tratamiento de mis datos personales conforme al RGPD.
+          </label>
+        </div>
+      </div>
+      
       {/* Mensaje de error */}
       {formStatus.error && (
         <div className="form-error">
@@ -269,6 +304,7 @@ const EarlyAccessForm = () => {
         {formStatus.loading ? 'Enviando...' : 'Solicitar acceso'}
       </button>
     </form>
+    </>
   );
 };
 
